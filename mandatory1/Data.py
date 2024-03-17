@@ -9,11 +9,12 @@ import pickle
 import torch
 from transformers import ConvNextImageProcessor
 
-base_transform = transforms.Compose([
-        transforms.Resize(224),
-        transforms.CenterCrop(224),
-        transforms.ToTensor(),
-    ])
+transformation_1 = transforms.Compose([
+    transforms.RandomHorizontalFlip(),
+    transforms.RandomRotation(15),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+])
 
 class DataSplit():
     def __init__(self, data_path):
@@ -89,7 +90,7 @@ class DataSplit():
     
     
 class ImageDataset(torch.utils.data.Dataset):
-    def __init__(self, images, labels, transform=base_transform, device=None, feature_extractor=None):
+    def __init__(self, images, labels, transform=None, device=None, feature_extractor=None):
         
         if device is None:
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -173,15 +174,15 @@ if __name__ == "__main__":
     
     train_data = ImageDataset(data.train_images,
                               data.train_labels,
-                              transform=base_transform)
+                              transform=transformation_1)
     
     val_data = ImageDataset(data.val_images,
                             data.val_labels,
-                            transform=base_transform)
+                            transform=transformation_1)
     
     test_data = ImageDataset(data.test_images,
                              data.test_labels,
-                             transform=base_transform)
+                             transform=transformation_1)
     
     train_loader = torch.utils.data.DataLoader(train_data,
                                                batch_size=args.batch_size,
