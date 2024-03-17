@@ -9,6 +9,8 @@ from torch.optim import lr_scheduler
 from torch.utils.data import DataLoader
 from torchvision import datasets, models, transforms
 
+from ResNetModel import ResNetModel
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--batch_size', type=int, default=16)
@@ -17,7 +19,7 @@ if __name__ == "__main__":
 
     rootdir = args.data_path
 
-    print(f"Creating dataset from {rootdir}...")
+    print(f"Creating dataset from '{rootdir}'...")
     data = DataSplit(rootdir)
 
     train_data = ImageDataset(data.train_images,
@@ -29,17 +31,25 @@ if __name__ == "__main__":
 
     train_loader = DataLoader(train_data,
                             batch_size=args.batch_size,
-                            shuffle=True)
-    test_loader = DataLoader(test_data,
-                            batch_size=args.batch_size,
-                            shuffle=True)
+                            shuffle=True,
+                            collate_fn=train_data.collate_fn)
     val_loader = DataLoader(val_data,
                             batch_size=args.batch_size,
-                            shuffle=True)
+                            shuffle=True,
+                            collate_fn=val_data.collate_fn)
+    test_loader = DataLoader(test_data,
+                            batch_size=args.batch_size,
+                            shuffle=True,
+                            collate_fn=test_data.collate_fn)
 
     print(f" * train loader size: {len(train_loader)}")
     print(f" * val loader size: {len(val_loader)}")
     print(f" * test loader size: {len(test_loader)}")
     
+    model = ResNetModel()
+    
+    print(f"\n\nTraining model...\n{'='*40}\n")
+    
+    model.train(train_loader, val_loader, epochs=10, verbose=True)
     
     

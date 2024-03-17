@@ -7,7 +7,7 @@ from torchvision import transforms
 import os
 import pickle
 import torch
-from transformers import AutoFeatureExtractor
+from transformers import ConvNextImageProcessor
 
 base_transform = transforms.Compose([
         transforms.Resize(224),
@@ -102,7 +102,7 @@ class ImageDataset(torch.utils.data.Dataset):
         if feature_extractor:
             self.feature_extractor = feature_extractor 
         else:
-            self.feature_extractor = AutoFeatureExtractor.from_pretrained("microsoft/resnet-18")   
+            self.feature_extractor = ConvNextImageProcessor.from_pretrained("microsoft/resnet-18")   
     
         
         # Labels must be converted to number, but to ensure the same mapping we store the encoder
@@ -114,7 +114,7 @@ class ImageDataset(torch.utils.data.Dataset):
             self.encoder.fit(labels)
             
             # Save the fitted encoder for future use
-            with open('label_encoder.pkl', 'wb') as f:
+            with open('models/label_encoder.pkl', 'wb') as f:
                 pickle.dump(self.encoder, f)
 
     def int2label(self, int_label):
@@ -127,18 +127,32 @@ class ImageDataset(torch.utils.data.Dataset):
         return len(self.images)
     
     def __getitem__(self, idx):
-        image = Image.open(self.images[idx]).convert('RGB')
+        image_name = self.images[idx]
+        image = Image.open(image_name).convert('RGB')
         label = self.labels[idx]
+        
+        # if self.transform:
+        #     image = self.transform(image)
         
         # Encode to number
         label = self.label2int(label)
-        
-        inputs = self.feature_extractor(images=image, return_tensors="pt")
     
-        # Move the inputs to the device
-        inputs = {k: v.to(self.device) for k, v in inputs.items()}
+        # print(inputs['pixel_values'].shape)
+        return image, label, image_name
+    
+
+    def collate_fn(self, batch):
+        images, labels, names = zip(*batch)
         
-        return inputs, label
+        inputs = self.feature_extractor(images=images, return_tensors="pt")
+        
+        inputs['pixel_values'] = inputs['pixel_values'].to(self.device)
+        
+        # Move the tensors to the device
+        inputs = {k: v.to(self.device) for k, v in inputs.items()}
+        labels = torch.tensor(labels).to(self.device)
+        
+        return {'inputs': inputs, 'labels': labels, 'names': names}
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
