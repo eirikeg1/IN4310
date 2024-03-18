@@ -1,3 +1,4 @@
+import time
 import torch
 from torch.utils.data import DataLoader
 
@@ -13,8 +14,10 @@ class GridSearch:
                  optimizers=[torch.optim.AdamW],
                  epochs_values=[10],
                  transforms=[None, transformation_1],
+                 transform_probability=0.5,
                  early_stopping=True,
                  patience=5,
+                 detailed_metrics=False,
                  save_results=True,
                  verbose=False,
                  device=None):
@@ -37,13 +40,18 @@ class GridSearch:
         self.early_stopping = early_stopping
         self.patience = patience
         self.transforms = transforms
+        self.transform_probability = transform_probability
         self.optimizers = optimizers
+        self.detailed_metrics = detailed_metrics
+        
         
         self.start_search()
         
     
     def start_search(self):
         print(f"\n\n{'='*100}\n    STARTING A GRID SEARCH...\n{'='*100}\n\n")
+        start_time = time.time()
+        
         for optimizer in self.optimizers:
             for lr in self.lr_values:
                 for epoch in self.epochs_values:
@@ -51,8 +59,8 @@ class GridSearch:
                         for transform in self.transforms:
                             print(f"\n\n+{'-'*85}+")
                             print(f"  Testing for:\n  lr={lr}, batch={batch_size}, epochs={epoch},"+\
-                                  f" transform: {transform is not None}, optimizer: {optimizer.__name__}...")
-                            print(f"+{'-'*85}+\n")
+                                  f" transform: {transform is not None}, optimizer: {optimizer.__name__}")
+                            print(f"+{'-'*85}+\n\n")
                             
                             train, val, test = self.create_data(batch_size=batch_size,
                                                                 transform=transform)
@@ -65,16 +73,25 @@ class GridSearch:
                                         early_stopping=self.early_stopping,
                                         patience=self.patience,
                                         save_model=False,
-                                        save_plots=True)
+                                        save_plots=True,
+                                        detailed_metrics=self.detailed_metrics)
                             
-                            metrics = model.evaluate(test)
+                            metrics = model.calculate_metrics(test)
                             map_score = metrics['map_score']
                             
                             if map_score > self.best_map:
                                 self.best_map = map_score
                                 self.best_model = model
-                                print(f" NEW BEST MODEL FOUND WITH MAP SCORE: {map_score:.4}")
-                        
+                                print(f"\nNEW BEST MODEL FOUND WITH MAP SCORE: {map_score:.4}")
+        
+        run_time = (time.time() - start_time) / 60
+        print(f"+{'-'*85}+\n\n SCRIPT FINISHED IN {run_time:.2f} minutes\n\n{'='*100}\n\n")
+        
+        print(f"\nBest model found with MAP score: {self.best_map:.4}\n")
+        
+        if self.save_results:
+            self.best_model.save_best()
+                  
         return self.best_model, self.best_map
     
     

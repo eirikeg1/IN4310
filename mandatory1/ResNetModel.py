@@ -1,6 +1,9 @@
 from collections import defaultdict
+import copy
 import time
 from matplotlib import pyplot as plt
+from matplotlib.ticker import MaxNLocator
+import numpy as np
 from sklearn import feature_extraction
 from sklearn.metrics import classification_report, average_precision_score
 from sklearn.preprocessing import label_binarize
@@ -8,10 +11,12 @@ from transformers import AutoImageProcessor, ResNetForImageClassification, AutoF
 import torch
 import torch.nn as nn
 from datasets import load_dataset
+from sklearn.decomposition import PCA
 
 
 class ResNetModel:
-    def __init__(self, model_version="microsoft/resnet-18",
+    def __init__(self,
+                 model="microsoft/resnet-18",
                  lr=5e-5,
                  optimizer=torch.optim.AdamW,
                  device=None):
@@ -19,13 +24,24 @@ class ResNetModel:
         self.train_loss_values = defaultdict(list)
         self.val_loss_values = defaultdict(list)
         self.metrics = {}
+        self.metrics_string = ""
+        self.model_info = "ResNet"
+        self.softmax_file = None
+        self.activations = None
         
         if device:
             self.device = device
         else:
             self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
-        self.model = ResNetForImageClassification.from_pretrained(model_version).to(self.device)
+        if isinstance(model, str):
+            self.model = ResNetForImageClassification.from_pretrained(model)
+        else:
+            self.model = model
+            
+            
+        self.model.to(self.device)
+        self.best_state = self.model.state_dict()
 
         self.criterion = torch.nn.CrossEntropyLoss(weight=None, 
                                                    size_average=None,
@@ -48,16 +64,13 @@ class ResNetModel:
         self.model.train()
         loss_values = []
         
-        num_batches = len(train_loader)
-        
         for i, batch in enumerate(train_loader):                
             self.optimizer.zero_grad()
 
             inputs = batch['inputs']
             labels = batch['labels']
             
-            outputs = self.model(**inputs)
-            
+            outputs = self.model(**inputs)           
             
             loss = self.criterion(outputs.logits, labels)
             
@@ -100,15 +113,17 @@ class ResNetModel:
               save_model=True,
               save_plots=True,
               save_checkpoints=False,
-              model_folder="models",):
+              model_folder="models",
+              detailed_metrics=False):
         
         self.model_name = f"ResNet18"
         start_time = time.time()
+        t_loss = []
+        v_loss = []
         
         for epoch in range(epochs):
             train_loss = self.train_epoch(train_loader)
             
-            self.train_loss_values[self.model_name].append(train_loss)
             
             best_val_loss = float('inf')
             patience_counter = 0
@@ -117,29 +132,45 @@ class ResNetModel:
                 continue
                 
             val_loss = self.val_loss(val_loader)
-            self.val_loss_values[self.model_name].append(val_loss)
             
-            map_score, acc, f1, prec, rec = self.calculate_metrics(val_loader)
+            t_loss.append(train_loss)
+            v_loss.append(val_loss)
             
-            self.metrics_string = f"_epoch_{epoch}_vloss_{val_loss:.4}_map_{map_score:.4}"
+            self.metrics_string = f"epoch_{epoch+1}_vloss_{val_loss:.4}"
+            
+            evaluation_string = (f"Epoch {epoch+1}\n{'-'*25}\n"
+                                 f" * train-loss: {train_loss:.4}\n"
+                                 f" * val-loss: {val_loss:.4}")
+            
+            if detailed_metrics:
+                metrics = self.calculate_metrics(val_loader)
+                
+                f1 = metrics['f1_score']
+                acc = metrics['accuracy']
+                prec = metrics['precision']
+                rec = metrics['recall']
+                map_score = metrics['map_score']
+                
+                evaluation_string += (f" * map: {map_score:.4}, "
+                                      f"f1: {f1:.4}, "
+                                      f"accuracy: {acc:.4}, "
+                                      f"precision: {prec:.4}, "
+                                      f"recall: {rec:.4}")
+                
+                self.metrics_string += f"_map_{map_score:.4}"
             
             if verbose:
-                evaluation_string = (f"Epoch {epoch+1}\n{'-'*25}\n"
-                                     f" * train-loss: {train_loss:.4}\n"
-                                     f" * val-loss: {val_loss:.4}\n"
-                                     f" * accuracy: {acc:.4}\n"
-                                     f" * f1: {f1:.4}\n"
-                                     f" * precision: {prec:.4}\n"
-                                     f" * recall: {rec:.4}\n\n")
-                print(evaluation_string)             
+                print(f"{evaluation_string}\n\n")             
             
             # Early stopping
             if save_model and val_loss < best_val_loss:
                 best_val_loss = val_loss
+                self.best_state = copy.deepcopy(self.model.state_dict())
+                
                 patience_counter = 0
                 
                 if save_checkpoints:
-                    self.save_checkpoint(epoch, val_loss, map_score)
+                    self.save_checkpoint(epoch+1, val_loss, map_score)
             else:
                 patience_counter += 1
             
@@ -148,11 +179,18 @@ class ResNetModel:
                 break
         
         
-        print(f"Finished training after {time.time() - start_time:.2f} seconds\n")
+        print(f"\n{'-'*25}\n\nFinished training after {time.time() - start_time:.2f} seconds\n")
+        
+        self.model_info = f"{self.model_name}_{self.metrics_string}"
+            
+        self.val_loss_values[self.model_info] = t_loss
+        self.train_loss_values[self.model_info] = v_loss
+        
+        # Updates the models state_dict to the last best state
+        self.model.load_state_dict(self.best_state)
         
         if save_model:  
-            torch.save(self.model.state_dict(),
-                       f"{model_folder}/{self.model_name}{self.metrics_string}.pt")
+            self.save_best()
             
         if save_plots:
             self.save_plots()
@@ -161,7 +199,7 @@ class ResNetModel:
                 
     ## EVALUATION METHODS
     
-    def calculate_metrics(self, data_loader):
+    def calculate_metrics(self, data_loader, save_softmax=False):
         self.model.eval()
         all_labels = []
         all_predictions = []
@@ -177,38 +215,113 @@ class ResNetModel:
                 
                 preds = torch.argmax(outputs.logits, dim=1)
                 
-                # FIX CODE BELOW
                 all_labels.extend(labels.tolist())
                 all_predictions.extend(preds.tolist())
         
-        # Binarize the labels and predictions
+        # Binarize labels and predictions
         classes = list(set(all_labels))
         all_labels_bin = label_binarize(all_labels, classes=classes)
         all_predictions_bin = label_binarize(all_predictions, classes=classes)
         
-        # Compute the average precision for each class
+        # Compute average precision for each class
         ap_per_class = [average_precision_score(all_labels_bin[:, i], all_predictions_bin[:, i]) 
                         for i in range(len(classes))]
+        
+        if save_softmax:
+            self.softmax_scores = torch.softmax(outputs.logits, dim=1).cpu().numpy()
+            self.softmax_file = f"softmaxes/{self.model_info}.txt"
+            self.save_softmaxes()
+            
         
         report = classification_report(all_labels,
                                        all_predictions,
                                        output_dict=True,
                                        zero_division=0)
 
-        # Compute the mean average precision
         metrics["map_score"] = sum(ap_per_class) / len(ap_per_class)
         metrics["accuracy"] = report['accuracy']
         metrics["f1_score"] = report['macro avg']['f1-score']
         metrics["precision"] = report['macro avg']['precision']
         metrics["recall"] = report['macro avg']['recall']
+        metrics["softmax_scores"] = self.softmax_scores
         
         self.metrics = metrics
         
+        
+        
         return metrics
-                
+    
+    def compare_softmaxes(self, file_path, tolerance=1e-5):
+        saved_softmaxes = np.loadtxt(file_path, delimiter=",")
+        current_softmaxes = self.softmax_scores
+        
+        print(f"\nComparing softmaxes from '{file_path}' with current softmaxes, with a tolerance of {tolerance}\n")
+        
+        assert np.allclose(saved_softmaxes,
+                           current_softmaxes,
+                           atol=tolerance), "Softmaxes are not equal"   
+           
+        print(f"Comparison successfull!\n")
+        
+        
+    def getActivation(self, name):
+        def hook(module, input, output):
+            self.activations[name].append(output.cpu().detach().numpy())
+        return hook
+    
+    def compute_feature_map_statistics(self, data_loader, selected_modules):
+        
+        self.activations = defaultdict(list)
+        
+        # Attach hooks to selected modules
+        for name, mod in selected_modules:
+            mod.register_forward_hook(self.getActivation(name))
+        
+        num_of_images = 0
+        
+        # Iterate data loader
+        for i, batch in enumerate(data_loader):
+            inputs = batch['inputs']
+            
+            self.model.eval()
+            with torch.no_grad():
+                _ = self.model(**inputs)
+            
+            # Only process the first 200 images (plus rest based on batch size)
+            num_of_images += inputs['pixel_values'].shape[0]
+            if num_of_images > 200:
+                break
+    
+        # Calculate percentage of all positive activations
+        
+        all_activations_flattened = [np.ravel(activation) 
+                                     for activation in self.activations.values()]
+        
+        positive_values = [activation > 0 for activation in all_activations_flattened]
 
+        percentages = [(np.sum(positive_values) / len(all_values)) * 100
+                       for all_values, positive_values in zip(all_activations_flattened,
+                                                              positive_values)]
+        
+        for name, percentage in zip(self.activations.keys(), percentages):
+            print(f"Percentage of positive activations for {name}: {percentage:.2f}%")
+            
+        
+        
+    def PCA(self):
+        ...
+        # pca_decomp = PCA(n_components=2)
+        # pca_decomp.fit(stacked_features)  
+    
+        
 
-     # SAVE RESULT METHODS      
+     # SAVE RESULT METHODS    
+     
+    def save_best(self, model_folder="models"):
+        print(f"Saving best model to '{model_folder}/{self.model_info}.pt'")
+        
+        torch.save(self.model.state_dict(),
+                   f"{model_folder}/{self.model_info}.pt")  
                 
     def save_checkpoint(self,
                         epoch,
@@ -216,31 +329,46 @@ class ResNetModel:
                         map_score,
                         model_folder="models",
                         model_name="ResNet18"):
+        print(f"Saving checkpoint after epoch {epoch+1} with val-loss: {val_loss:.4} and map: {map_score:.4}")
+        torch.save(self.model.state_dict(), f"{model_folder}/checkpoint_{self.model_info}.pt")
+       
+    def save_softmaxes(self, save_folder="softmaxes"):
+        lines = []
+        for i in range(self.softmax_scores.shape[0]):
+            lines.append(",".join([str(x) for x in self.softmax_scores[i]]))
         
-        torch.save(self.model.state_dict(),
-                   f"{model_folder}/checkpoint_epoch_{epoch}_vloss_{val_loss:.4}_map_{map_score:.4}.pt")
+        np.savetxt(f"{save_folder}/{self.model_info}.txt", lines, delimiter=",", fmt="%s")
         
     def save_plots(self):
         for model_name in self.val_loss_values.keys():
             
             fig, axs = plt.subplots(2, 1, figsize=(10, 8))
             
-            # Plot validation loss on first subplot
-            axs[0].plot(self.val_loss_values[model_name], label=f"{model_name} Validation Loss")
+            # Plot training loss on the second subplot
+            x_values = range(1, len(self.train_loss_values[model_name]) + 1)
+            axs[0].plot(x_values,
+                        self.train_loss_values[model_name], 
+                        label=f"{model_name} Training Loss")
             axs[0].legend()
-            axs[0].set_title("Validation Loss")
+            axs[0].set_title("Training Loss")
             axs[0].set_xlabel("Epoch")
             axs[0].set_ylabel("Loss")
+            axs[0].xaxis.set_major_locator(MaxNLocator(integer=True))
             
-            # Plot training loss on the second subplot
-            axs[1].plot(self.train_loss_values[model_name], label=f"{model_name} Training Loss")
+            # Plot validation loss on first subplot
+            x_values = range(1, len(self.val_loss_values[model_name]) + 1)
+            axs[1].plot(x_values,
+                        self.val_loss_values[model_name],
+                        label=f"{model_name} Validation Loss")
             axs[1].legend()
-            axs[1].set_title("Training Loss")
+            axs[1].set_title("Validation Loss")
             axs[1].set_xlabel("Epoch")
             axs[1].set_ylabel("Loss")
+            axs[1].xaxis.set_major_locator(MaxNLocator(integer=True)) # Only integer ticks
             
             plt.tight_layout() # Adjust layout so title/labels don't overlap
             plt.savefig(f"plots/{model_name}_losses.png")
+            print(f"Plots saved")
             plt.close(fig)
 
 

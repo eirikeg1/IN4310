@@ -1,6 +1,7 @@
 import argparse
 from collections import defaultdict
 from PIL import Image
+import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 from torchvision import transforms
@@ -90,7 +91,13 @@ class DataSplit():
     
     
 class ImageDataset(torch.utils.data.Dataset):
-    def __init__(self, images, labels, transform=None, device=None, feature_extractor=None):
+    def __init__(self,
+                 images,
+                 labels,
+                 transform=None,
+                 transform_probability=0.5,
+                 device=None,
+                 feature_extractor=None):
         
         if device is None:
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -99,11 +106,16 @@ class ImageDataset(torch.utils.data.Dataset):
         self.images = images
         self.labels = labels
         self.transform = transform
+        self.transform_probability = transform_probability
         
         if feature_extractor:
-            self.feature_extractor = feature_extractor 
+            self.feature_extractor = feature_extractor
+            self.rescale = None
         else:
-            self.feature_extractor = ConvNextImageProcessor.from_pretrained("microsoft/resnet-18")   
+            self.rescale = transforms.Compose([transforms.Resize((224, 224)),
+                                               transforms.ToTensor()
+                                               ])
+            self.feature_extractor = None   
     
         
         # Labels must be converted to number, but to ensure the same mapping we store the encoder
@@ -118,11 +130,19 @@ class ImageDataset(torch.utils.data.Dataset):
             with open('models/label_encoder.pkl', 'wb') as f:
                 pickle.dump(self.encoder, f)
 
+            
     def int2label(self, int_label):
+        if type(int_label) == list:
+            return self.encoder.inverse_transform(int_label)
+        
         return self.encoder.inverse_transform([int_label])[0]
     
     def label2int(self, label):
+        if type(label) == list:
+            return self.encoder.transform(label)
+        
         return self.encoder.transform([label])[0]
+        
         
     def __len__(self):
         return len(self.images)
@@ -132,8 +152,11 @@ class ImageDataset(torch.utils.data.Dataset):
         image = Image.open(image_name).convert('RGB')
         label = self.labels[idx]
         
-        # if self.transform:
-        #     image = self.transform(image)
+        if self.transform and torch.rand(1) < self.transform_probability:
+            image = self.transform(image)
+            
+        if self.rescale:
+            image = self.rescale(image)
         
         # Encode to number
         label = self.label2int(label)
@@ -143,14 +166,16 @@ class ImageDataset(torch.utils.data.Dataset):
     
 
     def collate_fn(self, batch):
-        images, labels, names = zip(*batch)
+        inputs, labels, names = zip(*batch)
         
-        inputs = self.feature_extractor(images=images, return_tensors="pt")
-        
-        inputs['pixel_values'] = inputs['pixel_values'].to(self.device)
+        if self.feature_extractor:
+            inputs = self.feature_extractor(images=inputs, return_tensors="pt")
+        else:
+            inputs = {'pixel_values': torch.stack(inputs)}
         
         # Move the tensors to the device
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
+        labels = np.array(labels)
         labels = torch.tensor(labels).to(self.device)
         
         return {'inputs': inputs, 'labels': labels, 'names': names}
@@ -195,7 +220,7 @@ if __name__ == "__main__":
                                              shuffle=True)
     
     print(f" * train loader size: {len(train_loader)}")
-    print(f" * val loader size: {len(val_loader)}")
+    print(f" * val loader si`ze: {len(val_loader)}")
     print(f" * test loader size: {len(test_loader)}\n")
     
     for data in val_loader:
