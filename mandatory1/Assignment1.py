@@ -19,8 +19,7 @@ def task_1(model,
            test_loader,
            skip_grid_search=False,
            verbose=False,
-           root_dir='data',
-           batch_size=16):
+           root_dir='data'):
     # Task 1
     transformation_1 = transforms.Compose([
         transforms.RandomHorizontalFlip(),
@@ -29,8 +28,8 @@ def task_1(model,
     ])
     
     lr_rates = [1e-4]
-    optimizers = [torch.optim.AdamW, torch.optim.SGD]
-    transformations = [None, transformation_1]
+    optimizers = [torch.optim.AdamW]
+    transformations = [transformation_1]
     
     # Store best model
     if not skip_grid_search:
@@ -41,11 +40,11 @@ def task_1(model,
                                 transforms=transformations,
                                 transform_probability=0.5,
                                 batch_size_values=[16],
-                                epochs_values=[10],
+                                epochs_values=[8],
                                 early_stopping=True,
                                 patience=3,
                                 save_results=True,
-                                verbose=True,
+                                verbose=verbose,
                                 detailed_metrics=False)
     
     # Load best model
@@ -64,18 +63,37 @@ def task_2(model, test_loader):
     selected_modules = [mod for i, mod in enumerate(model.model.named_modules())
                         if i in selected_indexes]
     
-    model.compute_feature_map_statistics(test_loader, selected_modules)    
+    model.compute_feature_map_statistics(test_loader, selected_modules)  
+    
+    
+def task_3(model, val_data, test_loader):
+    
+    val_loader = DataLoader(val_data,
+                            batch_size=args.batch_size,
+                            shuffle=True,
+                            collate_fn=val_data.collate_fn)
+    
+    base_model = ResNetModel()
+    
+    print(f"\n\nPerforming PCA on the feature maps\n\n")
+    model.PCA(val_loader, val_data.int2label, n_components=2)
+    
+    task_2(base_model, test_loader)  
+    base_model.PCA(val_loader, val_data.int2label, n_components=2)
+    
+    
     
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument('--task', type=int, default=0)
     parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--root_dir', type=str, default='data')
-    parser.add_argument('-v', '--verbose', action='store_true')
+    parser.add_argument('--print', type=bool, default=True)
     parser.add_argument('--skip-grid-search', action='store_true')
-    parser.add_argument('--task', type=int, default=0)
     args = parser.parse_args()
     
+    best_model = "models/ResNet18_epoch_8_vloss_0.3404.pt"
     # model = ResNetModel()
     # print(f"\n\nTraining model...\n{'='*40}\n")
     # model.train(train_loader, val_loader, epochs=10, verbose=args.verbose)
@@ -83,13 +101,25 @@ if __name__ == "__main__":
     # The three hyperparameter settings I tested with was different learning rates, batch sizes and
     # if to rotate/flip the image
     
-    pretrained_model = ResNetForImageClassification.from_pretrained("microsoft/resnet-18")
     feature_extractor = AutoFeatureExtractor.from_pretrained("microsoft/resnet-18")
     
-    model = ResNetModel(model=pretrained_model)
+    model = ResNetModel(model="microsoft/resnet-18")
+    
+    # Load saved model if not doing task 1 or if skipping grid search
+    if args.skip_grid_search or args.task > 1:
+        state_dict = torch.load(best_model)
+        model.model.load_state_dict(state_dict)
     
     data = DataSplit(args.root_dir)
-
+    
+    train_data = ImageDataset(data.train_images,
+                              data.train_labels,
+                              feature_extractor=feature_extractor)
+    
+    val_data = ImageDataset(data.val_images,
+                            data.val_labels,
+                            feature_extractor=feature_extractor)
+    
     test_data = ImageDataset(data.test_images,
                              data.test_labels,
                              feature_extractor=feature_extractor)
@@ -103,16 +133,15 @@ if __name__ == "__main__":
         task_1(model,
                test_loader,
                skip_grid_search=args.skip_grid_search,
-               verbose=args.verbose,
-               root_dir=args.root_dir,
-               batch_size=args.batch_size)
+               verbose=args.print,
+               root_dir=args.root_dir)
         
-    if args.task == 2 or args.task == 0:
+    if args.task > 1 or args.task == 0:
         task_2(model, test_loader)
     
+    if args.task == 3 or args.task == 0:
+        task_3(model, val_data, test_loader)
     
-    
-    # Task 2
     
     
     

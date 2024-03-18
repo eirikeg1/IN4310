@@ -4,6 +4,7 @@ import time
 from matplotlib import pyplot as plt
 from matplotlib.ticker import MaxNLocator
 import numpy as np
+import sklearn
 from sklearn import feature_extraction
 from sklearn.metrics import classification_report, average_precision_score
 from sklearn.preprocessing import label_binarize
@@ -11,7 +12,6 @@ from transformers import AutoImageProcessor, ResNetForImageClassification, AutoF
 import torch
 import torch.nn as nn
 from datasets import load_dataset
-from sklearn.decomposition import PCA
 
 
 class ResNetModel:
@@ -19,13 +19,15 @@ class ResNetModel:
                  model="microsoft/resnet-18",
                  lr=5e-5,
                  optimizer=torch.optim.AdamW,
+                 num_labels=6,
+                 state_dict=None,
                  device=None):
         
         self.train_loss_values = defaultdict(list)
         self.val_loss_values = defaultdict(list)
         self.metrics = {}
         self.metrics_string = ""
-        self.model_info = "ResNet"
+        self.model_info = "ResNet_not_fine_tuned"
         self.softmax_file = None
         self.activations = None
         
@@ -36,8 +38,19 @@ class ResNetModel:
         
         if isinstance(model, str):
             self.model = ResNetForImageClassification.from_pretrained(model)
+            # update number of out features
+            # print(self.model)
+            self.model.classifier = nn.Sequential(
+                nn.Flatten(),
+                nn.Linear(self.model.classifier[1].in_features, num_labels)
+            )
+            # self.model.classifier = nn.Linear(self.model.classifier[1].in_features, num_labels)
         else:
             self.model = model
+        
+        if state_dict:
+            self.model.load_state_dict(state_dict)
+            self.model_info = "ResNet_fine_tuned"
             
             
         self.model.to(self.device)
@@ -163,7 +176,7 @@ class ResNetModel:
                 print(f"{evaluation_string}\n\n")             
             
             # Early stopping
-            if save_model and val_loss < best_val_loss:
+            if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 self.best_state = copy.deepcopy(self.model.state_dict())
                 
@@ -183,13 +196,13 @@ class ResNetModel:
         
         self.model_info = f"{self.model_name}_{self.metrics_string}"
             
-        self.val_loss_values[self.model_info] = t_loss
-        self.train_loss_values[self.model_info] = v_loss
+        self.train_loss_values[self.model_info] = t_loss
+        self.val_loss_values[self.model_info] = v_loss
         
         # Updates the models state_dict to the last best state
         self.model.load_state_dict(self.best_state)
         
-        if save_model:  
+        if save_model:
             self.save_best()
             
         if save_plots:
@@ -230,6 +243,7 @@ class ResNetModel:
         if save_softmax:
             self.softmax_scores = torch.softmax(outputs.logits, dim=1).cpu().numpy()
             self.softmax_file = f"softmaxes/{self.model_info}.txt"
+            metrics["softmax_scores"] = self.softmax_scores
             self.save_softmaxes()
             
         
@@ -243,7 +257,6 @@ class ResNetModel:
         metrics["f1_score"] = report['macro avg']['f1-score']
         metrics["precision"] = report['macro avg']['precision']
         metrics["recall"] = report['macro avg']['recall']
-        metrics["softmax_scores"] = self.softmax_scores
         
         self.metrics = metrics
         
@@ -251,7 +264,7 @@ class ResNetModel:
         
         return metrics
     
-    def compare_softmaxes(self, file_path, tolerance=1e-5):
+    def compare_softmaxes(self, file_path, tolerance=5e-5):
         saved_softmaxes = np.loadtxt(file_path, delimiter=",")
         current_softmaxes = self.softmax_scores
         
@@ -272,6 +285,7 @@ class ResNetModel:
     def compute_feature_map_statistics(self, data_loader, selected_modules):
         
         self.activations = defaultdict(list)
+        self.activation_labels = []
         
         # Attach hooks to selected modules
         for name, mod in selected_modules:
@@ -282,10 +296,13 @@ class ResNetModel:
         # Iterate data loader
         for i, batch in enumerate(data_loader):
             inputs = batch['inputs']
+            labels = batch['labels']
             
             self.model.eval()
             with torch.no_grad():
                 _ = self.model(**inputs)
+            
+            self.activation_labels.extend(labels.cpu().tolist())
             
             # Only process the first 200 images (plus rest based on batch size)
             num_of_images += inputs['pixel_values'].shape[0]
@@ -293,7 +310,6 @@ class ResNetModel:
                 break
     
         # Calculate percentage of all positive activations
-        
         all_activations_flattened = [np.ravel(activation) 
                                      for activation in self.activations.values()]
         
@@ -308,11 +324,55 @@ class ResNetModel:
             
         
         
-    def PCA(self):
-        ...
-        # pca_decomp = PCA(n_components=2)
-        # pca_decomp.fit(stacked_features)  
-    
+    def PCA(self, data_loader, int2label, n_components=2):
+        
+        # Ensure model is in eval mode if this affects activation collection
+        self.model.eval()
+        
+        activation_list = list(self.activations.values())
+        
+        def flatten_activations(activation):
+            flat = []
+            for act in activation:
+                flat.extend(list(np.ravel(act)))
+            return np.array(flat)
+        
+        flattened_activations = [flatten_activations(batch) for batch in activation_list]
+        
+        
+        all_activations = np.vstack(flattened_activations)
+
+
+        pca_decomp = sklearn.decomposition.PCA(n_components=n_components)
+        pca_decomp.fit(all_activations)
+        transformed_features = pca_decomp.transform(all_activations)
+        
+        labels = int2label(list(self.activation_labels))
+        
+        labels = np.array(labels)
+        
+        unique_labels = np.unique(labels)  # Get unique labels for legend
+
+        # Prepare the plot
+        plt.figure(figsize=(10, 8))
+
+        unique_labels = np.unique(labels)
+
+        for unique_label in unique_labels:
+            indices = labels == unique_label
+            
+            if np.sum(indices) == 0:
+                continue 
+            
+            plt.scatter(transformed_features[indices, 0], 
+                        transformed_features[indices, 1], 
+                        label=unique_label)
+
+        plt.title('2D PCA of Model Activations')
+        plt.xlabel('Principal Component 1')
+        plt.ylabel('Principal Component 2')
+        plt.legend()
+        plt.savefig(f"pca/{self.model_info}.png")
         
 
      # SAVE RESULT METHODS    

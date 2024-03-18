@@ -1,0 +1,64 @@
+
+
+====================================================================================================
+    STARTING A GRID SEARCH...
+====================================================================================================
+
+
+
+
++-------------------------------------------------------------------------------------+
+  Testing for:
+  lr=0.0001, batch=16, epochs=4, transform: True, optimizer: AdamW
++-------------------------------------------------------------------------------------+
+
+
+Epoch 1
+-------------------------
+ * train-loss: 0.3909
+ * val-loss: 0.291
+
+
+Epoch 2
+-------------------------
+ * train-loss: 0.2499
+ * val-loss: 0.2838
+
+
+Epoch 3
+-------------------------
+ * train-loss: 0.2325
+ * val-loss: 0.3382
+
+
+Epoch 4
+-------------------------
+ * train-loss: 0.1972
+ * val-loss: 0.2669
+
+
+
+-------------------------
+
+Finished training after 203.58 seconds
+
+Plots saved
+
+NEW BEST MODEL FOUND WITH MAP SCORE: 0.8682
++-------------------------------------------------------------------------------------+
+
+ SCRIPT FINISHED IN 3.52 minutes
+
+====================================================================================================
+
+
+
+Best model found with MAP score: 0.8682
+
+Saving best model to 'models/ResNet18_epoch_4_vloss_0.2669.pt'
+Saving softmax values, predict once more and then compare the softmax values...
+
+Comparing softmaxes from 'softmaxes/ResNet_not_fine_tuned.txt' with current softmaxes, with a tolerance of 5e-05
+
+Comparison successfull!
+
