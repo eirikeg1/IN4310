@@ -1,10 +1,12 @@
 from collections import defaultdict
 import copy
+from itertools import cycle
 import time
 from matplotlib import pyplot as plt
 from matplotlib.ticker import MaxNLocator
 import numpy as np
 import sklearn
+from sklearn.decomposition import PCA as sklearnPCA
 from sklearn import feature_extraction
 from sklearn.metrics import classification_report, average_precision_score
 from sklearn.preprocessing import label_binarize
@@ -68,8 +70,24 @@ class ResNetModel:
         #                                                     step_size=7,
         #                                                     gamma=0.1)
 
-            
+    # Prediction    
+    def image_class_probabilities(self, data_loader):
+        self.model.eval()
         
+        # Store all predictions in a dictionary of {image_name : logits}
+        all_class_logits = {}
+        
+        with torch.no_grad():
+            for i, batch in enumerate(data_loader):
+                inputs = batch['inputs']
+                image_names = batch['names']
+                
+                outputs = self.model(**inputs)
+                
+                for image_name, logits in zip(image_names, outputs.logits):
+                    all_class_logits[image_name] = logits.cpu().numpy()
+        
+        return all_class_logits
  
     ## TRAINING METHODS
     
@@ -156,7 +174,7 @@ class ResNetModel:
                                  f" * val-loss: {val_loss:.4}")
             
             if detailed_metrics:
-                metrics = self.calculate_metrics(val_loader)
+                metrics = self.compute_metrics(val_loader)
                 
                 f1 = metrics['f1_score']
                 acc = metrics['accuracy']
@@ -212,7 +230,7 @@ class ResNetModel:
                 
     ## EVALUATION METHODS
     
-    def calculate_metrics(self, data_loader, save_softmax=False):
+    def compute_metrics(self, data_loader, save_softmax=False):
         self.model.eval()
         all_labels = []
         all_predictions = []
@@ -259,8 +277,6 @@ class ResNetModel:
         metrics["recall"] = report['macro avg']['recall']
         
         self.metrics = metrics
-        
-        
         
         return metrics
     
@@ -326,56 +342,46 @@ class ResNetModel:
         
     def PCA(self, data_loader, int2label, n_components=2):
         
-        # Ensure model is in eval mode if this affects activation collection
         self.model.eval()
         
-        activation_list = list(self.activations.values())
+        activations_list = list(self.activations.values())
+        labels = int2label(self.activation_labels)
         
-        def flatten_activations(activation):
-            flat = []
-            for act in activation:
-                flat.extend(list(np.ravel(act)))
-            return np.array(flat)
-        
-        flattened_activations = [flatten_activations(batch) for batch in activation_list]
-        
-        
-        all_activations = np.vstack(flattened_activations)
+        pca = sklearnPCA(n_components=n_components)        
 
-
-        pca_decomp = sklearn.decomposition.PCA(n_components=n_components)
-        pca_decomp.fit(all_activations)
-        transformed_features = pca_decomp.transform(all_activations)
+        principal_components_list = []
         
-        labels = int2label(list(self.activation_labels))
+        colors = plt.cm.get_cmap('rainbow', len(np.unique(labels)))
         
-        labels = np.array(labels)
+        plt.figure()
         
-        unique_labels = np.unique(labels)  # Get unique labels for legend
-
-        # Prepare the plot
-        plt.figure(figsize=(10, 8))
-
-        unique_labels = np.unique(labels)
-
-        for unique_label in unique_labels:
-            indices = labels == unique_label
+        for i, activation in enumerate(activations_list):
+            activation = np.array(activation)
+            activation = activation.reshape((activation.shape[0], -1))
+            principal_components = pca.fit_transform(activation)
             
-            if np.sum(indices) == 0:
-                continue 
-            
-            plt.scatter(transformed_features[indices, 0], 
-                        transformed_features[indices, 1], 
-                        label=unique_label)
+            principal_components_list.append(principal_components)
 
-        plt.title('2D PCA of Model Activations')
+
+        for i, (pca_result, class_label) in enumerate(zip(principal_components_list,
+                                                          self.activation_labels)):
+            plt.scatter(pca_result[:, 0],
+                        pca_result[:, 1],
+                        color=colors(class_label),
+                        label=labels[i])
+        
+        plt.legend()
+        
         plt.xlabel('Principal Component 1')
         plt.ylabel('Principal Component 2')
-        plt.legend()
+        plt.title(f'PCA {self.model_info}')
+        plt.grid(True)
+
         plt.savefig(f"pca/{self.model_info}.png")
         
 
-     # SAVE RESULT METHODS    
+
+    # SAVE RESULT METHODS    
      
     def save_best(self, model_folder="models"):
         print(f"Saving best model to '{model_folder}/{self.model_info}.pt'")

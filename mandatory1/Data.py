@@ -220,7 +220,7 @@ if __name__ == "__main__":
                                              shuffle=True)
     
     print(f" * train loader size: {len(train_loader)}")
-    print(f" * val loader si`ze: {len(val_loader)}")
+    print(f" * val loader size: {len(val_loader)}")
     print(f" * test loader size: {len(test_loader)}\n")
     
     for data in val_loader:

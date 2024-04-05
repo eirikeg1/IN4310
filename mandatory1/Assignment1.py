@@ -27,9 +27,9 @@ def task_1(model,
         transforms.RandomRotation(15),
     ])
     
-    lr_rates = [1e-4]
+    lr_rates = [1e-4, 5e-5]
     optimizers = [torch.optim.AdamW]
-    transformations = [transformation_1]
+    transformations = [None, transformation_1]
     
     # Store best model
     if not skip_grid_search:
@@ -40,7 +40,7 @@ def task_1(model,
                                 transforms=transformations,
                                 transform_probability=0.5,
                                 batch_size_values=[16],
-                                epochs_values=[8],
+                                epochs_values=[10],
                                 early_stopping=True,
                                 patience=3,
                                 save_results=True,
@@ -73,6 +73,7 @@ def task_3(model, val_data, test_loader):
                             shuffle=True,
                             collate_fn=val_data.collate_fn)
     
+    model.model_info = "ResNet18_fine_tuned"
     base_model = ResNetModel()
     
     print(f"\n\nPerforming PCA on the feature maps\n\n")
